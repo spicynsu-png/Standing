@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Стояние — глобальная пауза</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+        body { background: #000; color: #fff; font-family: 'Courier New', monospace; height: 100vh; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+        .screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #000; transition: opacity 1s ease; opacity: 1; z-index: 10; }
+        .hidden { opacity: 0; pointer-events: none; z-index: 0; }
+        .message { font-size: 2rem; text-align: center; padding: 2rem; letter-spacing: 0.1rem; white-space: pre-wrap; max-width: 90%; }
+        .timer { font-size: 5rem; font-weight: bold; margin-top: 2rem; background: rgba(255,255,255,0.1); padding: 0.5rem 1.5rem; border-radius: 2rem; }
+        .map-container { position: relative; width: 90%; max-width: 1200px; height: 60%; background: #111; border-radius: 2rem; overflow: hidden; border: 1px solid #333; margin-bottom: 2rem; }
+        #map { width: 100%; height: 100%; background: #0a0f1a; }
+        .stats { font-size: 1.2rem; background: rgba(0,0,0,0.7); padding: 0.5rem 1rem; border-radius: 2rem; backdrop-filter: blur(5px); margin-top: 1rem; text-align: center; }
+        button { background: transparent; border: 2px solid #fff; color: #fff; padding: 0.8rem 2rem; font-size: 1.2rem; font-family: monospace; cursor: pointer; margin-top: 2rem; border-radius: 3rem; transition: all 0.3s; }
+        button:hover { background: #fff; color: #000; box-shadow: 0 0 20px rgba(255,255,255,0.5); }
+        .info { position: fixed; bottom: 1rem; right: 1rem; font-size: 0.7rem; color: #555; z-index: 20; }
+        @keyframes pulse { 0% { transform: scale(0.8); opacity: 1; } 70% { transform: scale(1.2); opacity: 0.6; } 100% { transform: scale(0.8); opacity: 1; } }
+        .custom-marker { background-color: #ff4444; width: 12px; height: 12px; border-radius: 50%; animation: pulse 1.5s infinite; box-shadow: 0 0 0 rgba(255,68,68,0.4); }
+    </style>
+</head>
+<body>
+<div id="screen1" class="screen"><div class="message" id="typingMessage"></div></div>
+<div id="screen2" class="screen hidden"><div class="timer" id="timerDisplay">30</div><div class="message" style="font-size:1rem;">Просто стой. Дыши.</div></div>
+<div id="screen3" class="screen hidden"><div class="map-container"><div id="map"></div></div><div class="stats" id="statsText">Загрузка...</div><button id="restartBtn">Стоять снова</button></div>
+<div class="info">Стояние — глобальная пауза. Ты не один.</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    let globalCounter = 12847;
+    const STORAGE_KEY = 'standing_global_counter';
+    const sessionFlagKey = 'standing_counted';
+    function initCounter() {
+        let stored = localStorage.getItem(STORAGE_KEY);
+        if (stored === null) {
+            globalCounter = 12847;
+            localStorage.setItem(STORAGE_KEY, globalCounter);
+        } else {
+            globalCounter = parseInt(stored);
+        }
+        const counted = sessionStorage.getItem(sessionFlagKey);
+        if (!counted) {
+            globalCounter++;
+            localStorage.setItem(STORAGE_KEY, globalCounter);
+            sessionStorage.setItem(sessionFlagKey, 'true');
+        }
+        return globalCounter;
+    }
+    function updateStatsDisplay(value) {
+        const statsDiv = document.getElementById('statsText');
+        if (statsDiv) statsDiv.innerHTML = `🌍 Глобальное стояние: ${value.toLocaleString()} человек остановилось<br>⏳ Ты — один из них. Дыши.`;
+    }
+    let map = null;
+    const cities = [
+        { lat: 55.7558, lng: 37.6178, name: "Москва" },
+        { lat: 59.9343, lng: 30.3351, name: "Санкт-Петербург" },
+        { lat: 40.7128, lng: -74.0060, name: "Нью-Йорк" },
+        { lat: 51.5074, lng: -0.1278, name: "Лондон" },
+        { lat: 48.8566, lng: 2.3522, name: "Париж" },
+        { lat: 35.6895, lng: 139.6917, name: "Токио" },
+        { lat: 31.2304, lng: 121.4737, name: "Шанхай" },
+        { lat: 28.6139, lng: 77.2090, name: "Дели" },
+        { lat: -33.8688, lng: 151.2093, name: "Сидней" },
+        { lat: 19.0760, lng: 72.8777, name: "Мумбаи" },
+        { lat: 41.9028, lng: 12.4964, name: "Рим" },
+        { lat: 52.5200, lng: 13.4050, name: "Берлин" },
+        { lat: 37.7749, lng: -122.4194, name: "Сан-Франциско" },
+        { lat: 34.0522, lng: -118.2437, name: "Лос-Анджелес" },
+        { lat: 41.0082, lng: 28.9784, name: "Стамбул" },
+        { lat: 30.0444, lng: 31.2357, name: "Каир" },
+        { lat: 6.5244, lng: 3.3792, name: "Лагос" },
+        { lat: 23.8103, lng: 90.4125, name: "Дакка" },
+        { lat: 14.5995, lng: 120.9842, name: "Манила" }
+    ];
+    function initMap() {
+        if (map) return;
+        map = L.map('map').setView([20, 0], 2);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; CartoDB',
+            subdomains: 'abcd',
+            maxZoom: 19,
+            minZoom: 1
+        }).addTo(map);
+        cities.forEach(city => {
+            const customIcon = L.divIcon({ className: 'custom-marker', html: '<div class="custom-marker"></div>', iconSize: [12, 12], popupAnchor: [0, -5] });
+            L.marker([city.lat, city.lng], { icon: customIcon }).bindPopup(city.name).addTo(map);
+        });
+    }
+    const fullText = "Ты не обязан бежать.\nТы можешь просто стоять.\nИ дышать.";
+    let index = 0;
+    const typingElement = document.getElementById('typingMessage');
+    const screen1 = document.getElementById('screen1');
+    const screen2 = document.getElementById('screen2');
+    const screen3 = document.getElementById('screen3');
+    const timerDisplay = document.getElementById('timerDisplay');
+    let timerInterval;
+    let countdown = 30;
+    function typeNext() {
+        if (index < fullText.length) {
+            typingElement.textContent += fullText.charAt(index);
+            index++;
+            setTimeout(typeNext, 100);
+        } else {
+            setTimeout(() => {
+                screen1.classList.add('hidden');
+                screen2.classList.remove('hidden');
+                startTimer();
+            }, 1500);
+        }
+    }
+    function startTimer() {
+        countdown = 30;
+        timerDisplay.textContent = countdown;
+        timerInterval = setInterval(() => {
+            countdown--;
+            timerDisplay.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(timerInterval);
+                screen2.classList.add('hidden');
+                screen3.classList.remove('hidden');
+                initMap();
+                const counter = initCounter();
+                updateStatsDisplay(counter);
+            }
+        }, 1000);
+    }
+    function restart() {
+        if (timerInterval) clearInterval(timerInterval);
+        if (map) { map.remove(); map = null; }
+        index = 0;
+        typingElement.textContent = '';
+        screen3.classList.add('hidden');
+        screen1.classList.remove('hidden');
+        screen2.classList.add('hidden');
+        typeNext();
+    }
+    document.getElementById('restartBtn').addEventListener('click', restart);
+    typeNext();
+</script>
+</body>
+</html>
