@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Стояние — глобальная пауза</title>
+    <!-- Leaflet CSS и JS для настоящей карты -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            transition: opacity 1s ease;
+            opacity: 1;
+            z-index: 10;
+        }
+        .hidden {
+            opacity: 0;
+            pointer-events: none;
+            z-index: 0;
+        }
+        .message {
+            font-size: 2rem;
+            text-align: center;
+            padding: 2rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-width: 90%;
+        }
+        .timer {
+            font-size: 5rem;
+            font-weight: bold;
+            margin-top: 2rem;
+            font-family: monospace;
+            background: rgba(255,255,255,0.1);
+            padding: 0.5rem 1.5rem;
+            border-radius: 2rem;
+        }
+        .map-container {
+            width: 90%;
+            max-width: 1200px;
+            height: 60%;
+            border-radius: 2rem;
+            overflow: hidden;
+            border: 1px solid #333;
+            margin-bottom: 2rem;
+            position: relative;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+            background: #0a0f1a;
+        }
+        .stats {
+            font-size: 1.2rem;
+            background: rgba(0,0,0,0.7);
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            backdrop-filter: blur(5px);
+            text-align: center;
+            margin-top: 1rem;
+        }
+        button {
+            background: transparent;
+            border: 2px solid #fff;
+            color: #fff;
+            padding: 0.8rem 2rem;
+            font-size: 1.2rem;
+            font-family: monospace;
+            cursor: pointer;
+            margin-top: 2rem;
+            transition: all 0.3s;
+            border-radius: 3rem;
+        }
+        button:hover {
+            background: #fff;
+            color: #000;
+            box-shadow: 0 0 20px rgba(255,255,255,0.5);
+        }
+        .info {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            font-size: 0.7rem;
+            color: #555;
+            z-index: 20;
+        }
+        @media (max-width: 600px) {
+            .message { font-size: 1.2rem; }
+            .timer { font-size: 3rem; }
+            .stats { font-size: 0.9rem; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="screen1" class="screen">
+    <div class="message" id="typingMessage"></div>
+</div>
+
+<div id="screen2" class="screen hidden">
+    <div class="timer" id="timerDisplay">30</div>
+    <div class="message" style="font-size:1rem; margin-top:1rem;">Просто стой. Дыши.</div>
+</div>
+
+<div id="screen3" class="screen hidden">
+    <div class="map-container">
+        <div id="map"></div>
+    </div>
+    <div class="stats" id="statsText">Загрузка...</div>
+    <button id="restartBtn">Стоять снова</button>
+</div>
+
+<div class="info">Стояние — глобальная пауза. Ты не один.</div>
+
+<script>
+    
+    //const firebaseConfig = {
+  apiKey: "AIzaSyAMTkavmxJZtUIjaAvQwdOxZklCTELKx_Q",
+  authDomain: "standing-app-723ed.firebaseapp.com",
+  databaseURL: "https://standing-app-723ed-default-rtdb.firebaseio.com",
+  projectId: "standing-app-723ed",
+  storageBucket: "standing-app-723ed.firebasestorage.app",
+  messagingSenderId: "408543991124",
+  appId: "1:408543991124:web:43735a65df0b105c76e4c1"
+};
+
+
+    // Инициализация Firebase
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    // Глобальные переменные
+    let countdown = 30;
+    let timerInterval;
+    let map;
+    let markers = {};      // храним маркеры по userId
+    let currentUserId = null;
+    let isStanding = false;
+
+    // Получаем или генерируем уникальный ID для этой сессии (сохраняем в sessionStorage)
+    function getUserId() {
+        let id = sessionStorage.getItem('standing_user_id');
+        if (!id) {
+            id = 'user_' + Math.random().toString(36).substr(2, 9);
+            sessionStorage.setItem('standing_user_id', id);
+        }
+        return id;
+    }
+
+    // Функция получения геопозиции (один раз при входе)
+    let userLocation = null;
+    function getUserLocation() {
+        return new Promise((resolve) => {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        resolve({ lat: position.coords.latitude, lng: position.coords.longitude });
+                    },
+                    () => {
+                        // По умолчанию ставим Москву (или случайные координаты, но лучше Москва как центр)
+                        resolve({ lat: 55.7558, lng: 37.6178 });
+                    }
+                );
+            } else {
+                resolve({ lat: 55.7558, lng: 37.6178 });
+            }
+        });
+    }
+
+    // Запись стояния в базу (добавляем точку с временем истечения)
+    async function startStanding() {
+        if (isStanding) return;
+        isStanding = true;
+        currentUserId = getUserId();
+        userLocation = await getUserLocation();
+        // Добавляем запись в базу: /standings/userId = { lat, lng, timestamp, expireAt }
+        const expireAt = Date.now() + 31000; // 31 секунда (чуть больше таймера)
+        const standingRef = database.ref(`standings/${currentUserId}`);
+        await standingRef.set({
+            lat: userLocation.lat,
+            lng: userLocation.lng,
+            timestamp: Date.now(),
+            expireAt: expireAt
+        });
+        // Удаляем запись через 31 секунду (автоматически)
+        setTimeout(async () => {
+            await standingRef.remove();
+            isStanding = false;
+        }, 31000);
+    }
+
+    // Обновление счетчика (количество активных стояний)
+    function updateCounter() {
+        const standingsRef = database.ref('standings');
+        standingsRef.on('value', (snapshot) => {
+            const count = snapshot.numChildren();
+            document.getElementById('statsText').innerHTML = `🌍 Сейчас стоят: ${count} ${getPlural(count)}<br>⏳ Ты — один из них. Дыши.`;
+        });
+    }
+
+    function getPlural(n) {
+        return n % 10 === 1 && n % 100 !== 11 ? 'человек' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'человека' : 'человек');
+    }
+
+    // Отображение карты и маркеров в реальном времени
+    function initMap() {
+        map = L.map('map').setView([20, 0], 2); // начальный вид: мир
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> & CartoDB',
+            subdomains: 'abcd',
+            maxZoom: 19,
+            minZoom: 1
+        }).addTo(map);
+
+        // Слушаем изменения в базе standings
+        const standingsRef = database.ref('standings');
+        standingsRef.on('value', (snapshot) => {
+            const data = snapshot.val();
+            // Удаляем старые маркеры
+            Object.keys(markers).forEach(key => {
+                if (markers[key]) map.removeLayer(markers[key]);
+            });
+            markers = {};
+            // Добавляем новые маркеры
+            if (data) {
+                Object.keys(data).forEach(userId => {
+                    const loc = data[userId];
+                    if (loc && loc.lat && loc.lng) {
+                        const marker = L.circleMarker([loc.lat, loc.lng], {
+                            radius: 8,
+                            color: '#ff6666',
+                            weight: 2,
+                            opacity: 0.8,
+                            fillColor: '#ff3333',
+                            fillOpacity: 0.7
+                        }).addTo(map);
+                        // Пульсация: анимация через setInterval (упрощённо, для каждого маркера можно добавить свой класс)
+                        markers[userId] = marker;
+                        // Добавим простую пульсацию: изменение радиуса через setInterval (можно улучшить)
+                        let pulse = true;
+                        const interval = setInterval(() => {
+                            if (!marker._map) { clearInterval(interval); return; }
+                            const newRadius = pulse ? 12 : 8;
+                            marker.setRadius(newRadius);
+                            pulse = !pulse;
+                        }, 800);
+                        // сохраняем interval, чтобы потом очистить? Но не критично.
+                    }
+                });
+            }
+        });
+    }
+
+    // --- Анимация печати текста ---
+    const fullText = "Ты не обязан бежать.\nТы можешь просто стоять.\nИ дышать.";
+    let index = 0;
+    const typingElement = document.getElementById('typingMessage');
+    const screen1 = document.getElementById('screen1');
+    const screen2 = document.getElementById('screen2');
+    const screen3 = document.getElementById('screen3');
+    const timerDisplay = document.getElementById('timerDisplay');
+
+    function typeNext() {
+        if (index < fullText.length) {
+            typingElement.textContent += fullText.charAt(index);
+            index++;
+            setTimeout(typeNext, 100);
+        } else {
+            setTimeout(() => {
+                screen1.classList.add('hidden');
+                screen2.classList.remove('hidden');
+                startTimer();
+                // Запускаем процесс стояния
+                startStanding();
+            }, 1500);
+        }
+    }
+
+    function startTimer() {
+        countdown = 30;
+        timerDisplay.textContent = countdown;
+        timerInterval = setInterval(() => {
+            countdown--;
+            timerDisplay.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(timerInterval);
+                screen2.classList.add('hidden');
+                screen3.classList.remove('hidden');
+                // Инициализируем карту и счетчик
+                initMap();
+                updateCounter();
+            }
+        }, 1000);
+    }
+
+    function restart() {
+        if (timerInterval) clearInterval(timerInterval);
+        // Снимаем стояние, если оно активно
+        if (currentUserId) {
+            database.ref(`standings/${currentUserId}`).remove();
+        }
+        isStanding = false;
+        // Сброс интерфейса
+        screen3.classList.add('hidden');
+        screen1.classList.remove('hidden');
+        screen1.classList.remove('hidden');
+        screen2.classList.add('hidden');
+        index = 0;
+        typingElement.textContent = '';
+        // Перезапуск печати
+        typeNext();
+    }
+
+    // Старт
+    typeNext();
+
+    document.getElementById('restartBtn').addEventListener('click', () => {
+        restart();
+    });
+</script>
+</body>
+</html>
